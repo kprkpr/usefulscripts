@@ -12,6 +12,7 @@ DEFAULT_POST="8" #MB
 DEFAULT_TIME="30"
 RAM_HIGH="256"
 PROCESS_LIMIT=5  # Límite para marcar en rojo los procesos
+SERVER=$(curl -s --connect-timeout 2 -4 ifconfig.me || hostname -I | awk '{print $1}') # Auto-detectar IP servidor
 
 # --- PRE-CALCULO DE PROCESOS PHP-FPM ---
 declare -A PROCESS_MAP
@@ -31,9 +32,8 @@ else
 fi
 
 # --- IMPRIMIR CABECERA ---
-# He ajustado los anchos y añadido la columna HANDLER al final
-printf "%-30s %-8s %-12s %-12s %-12s %-10s %-10s %-20s\n" "DOMINIO" "PROCS" "RAM (Lim)" "UPLOAD" "POST" "TIME" "PHP VER" "HANDLER"
-printf "%s\n" "---------------------------------------------------------------------------------------------------------------------------------"
+printf "%-30s %-8s %-12s %-12s %-12s %-10s %-10s %-20s %-15s\n" "DOMINIO" "PROCS" "RAM (Lim)" "UPLOAD" "POST" "TIME" "PHP VER" "HANDLER" "IP (DNS)"
+printf "%s\n" "------------------------------------------------------------------------------------------------------------------------------------------------"
 
 for DOMAIN in $DOMAINS; do
     # Ignorar carpetas del sistema
@@ -128,9 +128,18 @@ for DOMAIN in $DOMAINS; do
         COLOR_PHP=$RED
     fi
 
+    # E) NSLOOKUP
+    DOMAIN_IP=$(nslookup -type=A "$DOMAIN" 8.8.8.8 2>/dev/null | grep "Address:" | tail -n +2 | head -1 | awk '{print $2}')
+    if [ -z "$DOMAIN_IP" ]; then DOMAIN_IP="-"; fi
+
+    COLOR_IP=$NC
+    if [ "$DOMAIN_IP" != "$SERVER" ] && [ "$DOMAIN_IP" != "-" ]; then
+        COLOR_IP=$RED
+    fi
+
     # --- IMPRIMIR ---
     # Se añade HANDLER_RAW al final
-    printf "%-30s ${COLOR_PROC}%-8s${NC} ${COLOR_RAM}%-12s${NC} ${COLOR_UPLOAD}%-12s${NC} ${COLOR_POST}%-12s${NC} ${COLOR_TIME}%-10s${NC} ${COLOR_PHP}%-10s${NC} %-20s\n" \
-    "${DOMAIN:0:29}" "$PROC_COUNT" "$MEMORY_LIMIT" "$UPLOAD_MAX" "$POST_MAX" "$MAX_EXEC" "$PHP_DISPLAY" "$HANDLER_RAW"
+    printf "%-30s ${COLOR_PROC}%-8s${NC} ${COLOR_RAM}%-12s${NC} ${COLOR_UPLOAD}%-12s${NC} ${COLOR_POST}%-12s${NC} ${COLOR_TIME}%-10s${NC} ${COLOR_PHP}%-10s${NC} %-20s ${COLOR_IP}%-15s${NC}\n" \
+    "${DOMAIN:0:29}" "$PROC_COUNT" "$MEMORY_LIMIT" "$UPLOAD_MAX" "$POST_MAX" "$MAX_EXEC" "$PHP_DISPLAY" "$HANDLER_RAW" "$DOMAIN_IP"
 
 done
