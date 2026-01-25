@@ -78,11 +78,14 @@ for DOMAIN in $DOMAINS; do
 
         UPLOAD_MAX=$(grep -i "^upload_max_filesize" "$PHP_CONFIG" | cut -d= -f2 | tr -d '[:space:]')
         UPLOAD_NUM=${UPLOAD_MAX//[!0-9]/}
+        [ -z "$UPLOAD_NUM" ] && UPLOAD_NUM=0
 
         POST_MAX=$(grep -i "^post_max_size" "$PHP_CONFIG" | cut -d= -f2 | tr -d '[:space:]')
         POST_NUM=${POST_MAX//[!0-9]/}
+        [ -z "$POST_NUM" ] && POST_NUM=0
 
         MAX_EXEC=$(grep -i "^max_execution_time" "$PHP_CONFIG" | cut -d= -f2 | tr -d '[:space:]')
+        [ -z "$MAX_EXEC" ] && MAX_EXEC=0
     else
         MEMORY_LIMIT="No ini"
         UPLOAD_MAX="0"; UPLOAD_NUM=0
