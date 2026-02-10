@@ -17,7 +17,7 @@ SERVER=$(curl -s --connect-timeout 2 -4 ifconfig.me || hostname -I | awk '{print
 # --- PRE-CALCULO DE PROCESOS PHP-FPM ---
 declare -A PROCESS_MAP
 
-echo "Analizando procesos PHP-FPM..."
+echo "Analyzing PHP-FPM processes..."
 
 while read -r count domain; do
     domain=$(echo "$domain" | xargs)
@@ -32,7 +32,7 @@ else
 fi
 
 # --- IMPRIMIR CABECERA ---
-printf "%-30s %-8s %-12s %-12s %-12s %-10s %-10s %-20s %-15s\n" "DOMINIO" "PROCS" "RAM (Lim)" "UPLOAD" "POST" "TIME" "PHP VER" "HANDLER" "IP (DNS)"
+printf "%-30s %-8s %-12s %-12s %-12s %-10s %-10s %-20s %-15s\n" "DOMAIN" "PROCS" "RAM (Lim)" "UPLOAD" "POST" "TIME" "PHP VER" "HANDLER" "IP (DNS)"
 printf "%s\n" "------------------------------------------------------------------------------------------------------------------------------------------------"
 
 for DOMAIN in $DOMAINS; do
