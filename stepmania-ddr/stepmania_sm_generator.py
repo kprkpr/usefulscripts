@@ -175,16 +175,17 @@ def convert_to_mp4_video(input_path: str, callback=None) -> str:
     try:
         result = subprocess.run(
             [
-                'ffmpeg', '-i', str(input_path),
-                '-map', '0:v:0',
-                '-c:v', 'libx264',
-                '-preset', 'medium',
-                '-crf', '18',
-                '-pix_fmt', 'yuv420p',
-                '-an',
-                '-movflags', '+faststart',
-                '-y',
-                str(output_path)
+            'ffmpeg', '-i', str(input_path),
+            '-map', '0:v:0',
+            '-c:v', 'libx264',
+            '-preset', 'medium',
+            '-crf', '26',
+            '-vf', 'scale=-2:720',
+            '-pix_fmt', 'yuv420p',
+            '-an',
+            '-movflags', '+faststart',
+            '-y',
+            str(output_path)
             ],
             capture_output=True,
             text=True,
@@ -596,6 +597,26 @@ class AudioAnalyzer:
         self.onset_strengths = raw / mx if mx > 0 else raw
         self._log(f"Found {len(self.onset_times)} onsets", 65)
 
+    def get_sm_offset(self) -> float:
+        """Return a small SM offset that keeps downbeats on measure boundaries."""
+        if not self.bpm or self.bpm <= 0:
+            return -self.first_downbeat
+        beat_period = 60.0 / self.bpm
+        if beat_period <= 0:
+            return -self.first_downbeat
+
+        beats_from_zero = self.first_downbeat / beat_period
+        target_beat = round(beats_from_zero / 4.0) * 4.0
+        target_time = target_beat * beat_period
+
+        # Offset is the time shift so that the first downbeat lands on target_beat.
+        offset = -(self.first_downbeat - target_time)
+        return float(offset)
+
+    def get_chart_time_offset(self) -> float:
+        """Return the time (s) corresponding to beat 0 in the chart grid."""
+        return -self.get_sm_offset()
+
     def get_dominant_band(self, t: float) -> int:
         """Return dominant frequency band 0-3 at time *t*.
 
@@ -717,12 +738,12 @@ class StepChartGenerator:
 
     # -- post-processing rules (ergonomic / musical polish) --
 
-    def _postprocess(self, measures, subdiv, cfg):
+    def _postprocess(self, measures, subdiv, cfg, offset_time):
         """Apply rules to make charts feel more natural & playable."""
         bpm = self.az.bpm
         spm = 4 * 60.0 / bpm
         spr = spm / subdiv
-        offset = self.az.first_downbeat
+        offset = offset_time
 
         # ---------- Rule 1: Mute arrows during quiet sections ----------
         for m_idx, meas in enumerate(measures):
@@ -829,8 +850,8 @@ class StepChartGenerator:
     def generate_chart(self, name):
         cfg   = self.CONFIGS[name]
         bpm   = self.az.bpm
-        # Use the first downbeat as reference, not just beat_times[0]
-        offset = self.az.first_downbeat
+        # Use the computed chart time offset (beat 0 reference)
+        offset = self.az.get_chart_time_offset()
         bpmeas = 4                                   # beats per measure (4/4)
         spm    = bpmeas * 60.0 / bpm                 # seconds per measure
         subdiv = cfg['subdiv']
@@ -879,7 +900,7 @@ class StepChartGenerator:
             measures.append(mrows)
 
         # ---- post-processing ----
-        measures = self._postprocess(measures, subdiv, cfg)
+        measures = self._postprocess(measures, subdiv, cfg, offset)
 
         # trim trailing empty measures (keep at least 1)
         while len(measures) > 1 and all(
@@ -935,8 +956,8 @@ class SMFileWriter:
         title   = Path(self.az.filepath).stem
         music   = os.path.basename(self.music_file)
         video   = os.path.basename(self.video_file) if self.video_file else None
-        # Use the first downbeat (properly aligned) for the SM offset
-        offset  = -self.az.first_downbeat
+        # Use a small offset aligned to the nearest measure boundary
+        offset  = self.az.get_sm_offset()
         preview = self.az.duration * 0.30
 
         if video:
@@ -1013,8 +1034,8 @@ class App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("StepMania .sm Generator")
-        self.root.geometry("740x620")
-        self.root.minsize(620, 520)
+        self.root.geometry("700x750")
+        self.root.minsize(600, 700)
 
         # variables
         self.v_in   = tk.StringVar()
