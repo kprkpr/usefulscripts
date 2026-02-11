@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""
-StepMania .sm File Generator
-=============================
-Analyzes audio files and generates StepMania DDR step charts (.sm)
-with multiple difficulty levels (Beginner → Challenge).
-
-Uses audio analysis for step-chart generation:
-    - BPM detection via tempo estimation (madmom neural net or librosa fallback)
-    - Beat & downbeat tracking via DBN / accent-pattern analysis
-    - Onset detection via spectral flux
-    - Spectral band analysis for musically-aware arrow placement
-    - Optional background video conversion to MP4 (H.264, no audio)
-
-Requirements:
-        pip install librosa numpy soundfile
-        pip install madmom          # optional but STRONGLY recommended for accuracy (Install using git madmom repo if Python > 3.9)
-        System: ffmpeg (for audio/video decoding + conversion)
-"""
+# -*- coding: utf-8 -*-
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -703,10 +686,42 @@ class StepChartGenerator:
     def _log(self, msg, pct=0):
         self._cb(msg, pct)
 
+    def _row_color(self, subdiv, r_idx):
+        """Return the pulse color for a row index within a measure."""
+        if subdiv == 8:
+            return 'red' if r_idx % 2 == 0 else 'blue'
+        if subdiv == 16:
+            mod = r_idx % 4
+            if mod == 0:
+                return 'red'
+            if mod == 2:
+                return 'blue'
+            return 'yellow'
+        return 'red'
+
+    def _map_band_to_arrow(self, t, band, cfg):
+        """Map a spectral band to an arrow index with bass rotation."""
+        if band != 0:
+            return band
+        bpm = max(self.az.bpm, 1.0)
+        measure_len = 4.0 * 60.0 / bpm
+        measure_idx = int(max(t, 0.0) / measure_len)
+        # Rotate bass across lanes to avoid left bias; slower on lower diffs.
+        level = cfg.get('level', 6)
+        if level <= 3:
+            measures_per_step = 4
+        elif level <= 6:
+            measures_per_step = 2
+        else:
+            measures_per_step = 1
+        step_idx = measure_idx // measures_per_step
+        bass_cycle = [0, 1, 2, 3]
+        return bass_cycle[step_idx % 4]
+
     # -- arrow assignment --
-    def _pick_arrow(self, t, prev, cfg):
+    def _pick_arrow(self, t, prev, cfg, color=None):
         band = self.az.get_dominant_band(t)
-        arrow = band
+        arrow = self._map_band_to_arrow(t, band, cfg)
 
         # 30 % random variety
         if self.rng.random() < 0.30:
@@ -730,7 +745,14 @@ class StepChartGenerator:
         row[arrow] = 1
 
         # jumps
-        if cfg['jump_prob'] and self.rng.random() < cfg['jump_prob']:
+        jump_prob = cfg['jump_prob']
+        if cfg['level'] == 6 and color:
+            if color == 'red':
+                jump_prob = min(0.35, jump_prob * 1.6)
+            elif color == 'blue':
+                jump_prob = jump_prob * 0.4
+
+        if jump_prob and self.rng.random() < jump_prob:
             alt = [i for i in range(4) if i != arrow]
             row[self.rng.choice(alt)] = 1
 
@@ -771,6 +793,50 @@ class StepChartGenerator:
                         elif prev_arrow == 3 and a == 0:  # R → L
                             row[:] = [0, 1, 0, 0]  # switch to Down
                         prev_arrow = [i for i in range(4) if row[i]][0] if any(row) else prev_arrow
+
+        # ---------- Rule 2b: De-repeat red/blue runs (medium) ----------
+        if cfg['level'] >= 6 and subdiv in (8, 16):
+            step = 1 if subdiv == 8 else 2
+            last_gi = None
+            last_arrow = None
+            last_color = None
+            for m_idx, meas in enumerate(measures):
+                for r_idx, row in enumerate(meas):
+                    if sum(row) != 1:
+                        last_gi = None
+                        last_arrow = None
+                        last_color = None
+                        continue
+
+                    color = self._row_color(subdiv, r_idx)
+                    if color not in ('red', 'blue'):
+                        last_gi = None
+                        last_arrow = None
+                        last_color = None
+                        continue
+
+                    gi = m_idx * subdiv + r_idx
+                    arrow = [i for i in range(4) if row[i]][0]
+
+                    if (last_gi is not None
+                            and gi == last_gi + step
+                            and last_color is not None
+                            and color != last_color
+                            and arrow == last_arrow):
+                        # Alternate arrows/sides to avoid repetitive red-blue runs
+                        if arrow in self.LEFT_FOOT:
+                            candidates = self.RIGHT_FOOT + [1, 2]
+                        else:
+                            candidates = self.LEFT_FOOT + [1, 2]
+                        candidates = [a for a in candidates if a != arrow]
+                        new_arrow = self.rng.choice(candidates)
+                        row[:] = [0, 0, 0, 0]
+                        row[new_arrow] = 1
+                        arrow = new_arrow
+
+                    last_gi = gi
+                    last_arrow = arrow
+                    last_color = color
 
         # ---------- Rule 3: Add emphasis jumps on downbeats (med+ diffs) ----------
         if cfg['level'] >= 5:
@@ -828,6 +894,53 @@ class StepChartGenerator:
                     else:
                         last_jump_gi = gi
 
+        # ---------- Rule 6: Hard diff yellow-note constraints ----------
+        if cfg['level'] == 8 and subdiv == 16:
+            # Limit to one yellow per measure
+            for m_idx, meas in enumerate(measures):
+                yellow_rows = []
+                for r_idx, row in enumerate(meas):
+                    if sum(row) == 0:
+                        continue
+                    if self._row_color(subdiv, r_idx) == 'yellow':
+                        t = offset + (m_idx * subdiv + r_idx) * spr
+                        yellow_rows.append((r_idx, self.az.get_rms_at(t)))
+
+                if len(yellow_rows) > 1:
+                    yellow_rows.sort(key=lambda x: x[1], reverse=True)
+                    for r_idx, _ in yellow_rows[1:]:
+                        meas[r_idx][:] = [0, 0, 0, 0]
+
+            # Yellow notes cannot be jumps
+            for meas in measures:
+                for r_idx, row in enumerate(meas):
+                    if self._row_color(subdiv, r_idx) != 'yellow':
+                        continue
+                    if sum(row) >= 2:
+                        arrows = [i for i in range(4) if row[i]]
+                        keep = self.rng.choice(arrows)
+                        row[:] = [0, 0, 0, 0]
+                        row[keep] = 1
+
+            # Remove yellow notes adjacent to jumps
+            jump_map = []
+            for m_idx, meas in enumerate(measures):
+                for r_idx, row in enumerate(meas):
+                    jump_map.append(sum(row) >= 2)
+
+            total_rows = len(jump_map)
+            for m_idx, meas in enumerate(measures):
+                for r_idx, row in enumerate(meas):
+                    if sum(row) == 0:
+                        continue
+                    if self._row_color(subdiv, r_idx) != 'yellow':
+                        continue
+                    gi = m_idx * subdiv + r_idx
+                    left_jump = gi > 0 and jump_map[gi - 1]
+                    right_jump = gi + 1 < total_rows and jump_map[gi + 1]
+                    if left_jump or right_jump:
+                        row[:] = [0, 0, 0, 0]
+
         return measures
 
     def _smooth_run(self, flat, start, length):
@@ -876,6 +989,25 @@ class StepChartGenerator:
                 if ri >= 0 and abs((ot - offset) / spr - ri) < 0.45:
                     note_grid.add(ri)
 
+        # Medium: favor more red/blue pulses based on energy
+        if cfg['level'] == 6:
+            total_rows = n_meas * subdiv
+            for gi in range(total_rows):
+                if gi in note_grid:
+                    continue
+                r_idx = gi % subdiv
+                color = self._row_color(subdiv, r_idx)
+                if color not in ('red', 'blue'):
+                    continue
+                trow = offset + gi * spr
+                if trow < self.az.music_start or trow > self.az.duration:
+                    continue
+                rms = self.az.get_rms_at(trow)
+                base = 0.18 if color == 'red' else 0.12
+                prob = base * min(1.0, rms / 0.6)
+                if self.rng.random() < prob:
+                    note_grid.add(gi)
+
         # density cap
         max_notes = int(self.az.duration * cfg['max_nps'])
         if len(note_grid) > max_notes:
@@ -891,7 +1023,8 @@ class StepChartGenerator:
                 gi   = m * subdiv + r
                 trow = offset + gi * spr
                 if gi in note_grid and 0 <= trow <= self.az.duration:
-                    row, arrow = self._pick_arrow(trow, prev, cfg)
+                    color = self._row_color(subdiv, r)
+                    row, arrow = self._pick_arrow(trow, prev, cfg, color=color)
                     mrows.append(row)
                     prev.append(arrow)
                     prev = prev[-8:]
@@ -1046,6 +1179,10 @@ class App:
         self.v_seed = tk.StringVar()
         self.v_bpm  = tk.StringVar()  # manual BPM override
         self.diff_vars: dict[str, tk.BooleanVar] = {}
+        self.last_dir = os.getcwd()
+        self._last_in = ""
+
+        self.v_in.trace_add('write', self._on_in_change)
 
         self._build()
 
@@ -1118,22 +1255,52 @@ class App:
 
     # ---- callbacks ----
     def _browse_in(self):
-        p = filedialog.askopenfilename(title="Select Audio", filetypes=self.AUDIO_TYPES)
+        p = filedialog.askopenfilename(
+            title="Select Audio",
+            filetypes=self.AUDIO_TYPES,
+            initialdir=self.last_dir,
+        )
         if p:
             self.v_in.set(p)
             self.v_out.set(str(Path(p).with_suffix('.sm')))
+            self._update_last_dir(p)
 
     def _browse_out(self):
         p = filedialog.asksaveasfilename(
             title="Save .sm", defaultextension='.sm',
-            filetypes=[('StepMania', '*.sm'), ('All', '*.*')])
+            filetypes=[('StepMania', '*.sm'), ('All', '*.*')],
+            initialdir=self.last_dir)
         if p:
             self.v_out.set(p)
+            self._update_last_dir(p)
 
     def _browse_vid(self):
-        p = filedialog.askopenfilename(title="Select Video", filetypes=self.VIDEO_TYPES)
+        p = filedialog.askopenfilename(
+            title="Select Video",
+            filetypes=self.VIDEO_TYPES,
+            initialdir=self.last_dir,
+        )
         if p:
             self.v_vid.set(p)
+            self._update_last_dir(p)
+
+    def _update_last_dir(self, path):
+        p = Path(path).expanduser()
+        try:
+            self.last_dir = str(p.resolve().parent)
+        except Exception:
+            self.last_dir = str(p.parent)
+
+    def _on_in_change(self, *_):
+        p = self.v_in.get().strip()
+        if not p:
+            return
+        self._update_last_dir(p)
+        prev_out = self.v_out.get().strip()
+        auto_out = str(Path(self._last_in).with_suffix('.sm')) if self._last_in else ""
+        if not prev_out or prev_out == auto_out:
+            self.v_out.set(str(Path(p).with_suffix('.sm')))
+        self._last_in = p
 
     def _log(self, msg, pct=None):
         def _do():
