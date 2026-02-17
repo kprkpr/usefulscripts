@@ -20,6 +20,7 @@ from urllib.parse import urlencode, parse_qs
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import socket
 import json
+import re
 
 CLIENT_ID = "your_client_id"
 TENANT_ID = "your_tenant_id"
@@ -811,9 +812,35 @@ class OutlookBackup:
 	
 	def _sanitize_filename(self, filename):
 		"""Limpia un nombre de archivo de caracteres no válidos"""
+		if filename is None:
+			filename = ""
+
+		filename = str(filename)
+
+		# Reemplazar caracteres no válidos en Windows
 		invalid_chars = '<>:"/\\|?*'
 		for char in invalid_chars:
 			filename = filename.replace(char, '_')
+
+		# Reemplazar caracteres de control (incluye tabs, saltos de línea, etc.)
+		filename = re.sub(r'[\x00-\x1F\x7F]', '_', filename)
+
+		# No permitir nombres que terminen en punto o espacio en Windows
+		filename = filename.strip().rstrip('. ')
+
+		# Evitar nombres reservados de Windows
+		reserved_names = {
+			'CON', 'PRN', 'AUX', 'NUL',
+			'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+			'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+		}
+		if filename.upper() in reserved_names:
+			filename = f"_{filename}_"
+
+		# Fallback si después de sanear queda vacío
+		if not filename:
+			filename = "carpeta_sin_nombre"
+
 		return filename[:200]  # Limitar longitud
 
 
