@@ -615,7 +615,8 @@ class OutlookBackup:
 					folder_path = backup_folder
 				
 				# Descargar correos de cada carpeta
-				self._download_folder_emails(folder_id, folder_name, folder_path, backup_folder)
+				folder_downloaded, folder_failed = self._download_folder_emails(folder_id, folder_name, folder_path, backup_folder)
+				self.log_message(f"   📊 Folder summary '{folder_name}': ✓ {folder_downloaded} downloaded | ❌ {folder_failed} errors")
 			
 			# Resumen final
 			self.log_message("="*60)
@@ -641,32 +642,68 @@ class OutlookBackup:
 			self.stop_button.config(state="disabled")
 	
 	def _get_all_folders(self):
-		"""Obtiene todas las carpetas de correo recursivamente"""
+		"""Obtiene todas las carpetas de correo recursivamente, con paginación"""
 		folders = []
-		headers = {'Authorization': f'Bearer {self.access_token}'}
-		
+		visited_ids = set()
+		pages_scanned = 0
+		start_scan = time.time()
+		self.log_message("🔎 Scanning mailbox folders...")
+
 		def get_folders_recursive(parent_id=None):
+			nonlocal pages_scanned
 			if parent_id:
-				url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/mailFolders/{parent_id}/childFolders"
+				url = (
+					f"https://graph.microsoft.com/v1.0/users/{self.user_email}/mailFolders/"
+					f"{parent_id}/childFolders?$top=100&includeHiddenFolders=true"
+				)
 			else:
-				url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/mailFolders"
-			
-			response = self._make_api_request(url)
-			
-			folder_list = response.json().get('value', [])
-			
-			for folder in folder_list:
-				folders.append(folder)
-				# Recursivamente obtener subcarpetas
-				get_folders_recursive(folder['id'])
-		
+				url = (
+					f"https://graph.microsoft.com/v1.0/users/{self.user_email}/mailFolders"
+					"?$top=100&includeHiddenFolders=true"
+				)
+
+			while url and self.is_running:
+				response = self._make_api_request(url)
+				data = response.json()
+				folder_list = data.get('value', [])
+				pages_scanned += 1
+
+				if pages_scanned % 25 == 0:
+					elapsed = int(time.time() - start_scan)
+					self.log_message(
+						f"   🔄 Scan in progress: {len(folders)} folders found, {pages_scanned} API pages, {elapsed}s"
+					)
+
+				for folder in folder_list:
+					folder_id = folder.get('id')
+					if not folder_id or folder_id in visited_ids:
+						continue
+
+					visited_ids.add(folder_id)
+					folders.append(folder)
+
+					if len(folders) % 250 == 0:
+						elapsed = int(time.time() - start_scan)
+						self.log_message(
+							f"   📁 {len(folders)} folders found so far ({elapsed}s)"
+						)
+
+					# Recursivamente obtener subcarpetas
+					get_folders_recursive(folder_id)
+
+				url = data.get('@odata.nextLink')
+
 		get_folders_recursive()
+		elapsed = int(time.time() - start_scan)
+		self.log_message(f"✅ Folder scan completed: {len(folders)} folders in {elapsed}s")
 		return folders
 	
 	def _download_folder_emails(self, folder_id, folder_name, folder_path, backup_folder):
 		"""Descarga todos los correos de una carpeta"""
 		headers = {'Authorization': f'Bearer {self.access_token}'}
-		url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/mailFolders/{folder_id}/messages"
+		url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/mailFolders/{folder_id}/messages?$top=100"
+		folder_downloaded = 0
+		folder_failed = 0
 		
 		
 		# Crear MBOX específico para esta carpeta si es necesario
@@ -692,6 +729,7 @@ class OutlookBackup:
 					try:
 						self._save_email(message, folder_name, folder_path, folder_mbox)
 						self.downloaded_emails += 1
+						folder_downloaded += 1
 						
 						# Actualizar progreso
 						if self.total_emails > 0:
@@ -706,6 +744,7 @@ class OutlookBackup:
 						
 					except Exception as e:
 						self.failed_emails += 1
+						folder_failed += 1
 						self.log_message(f"   ❌ Error in email: {str(e)}")
 				
 				# Siguiente página
@@ -723,6 +762,8 @@ class OutlookBackup:
 			folder_mbox.flush()
 			folder_mbox.unlock()
 			folder_mbox.close()
+
+		return folder_downloaded, folder_failed
 			
 
 	
